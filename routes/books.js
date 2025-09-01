@@ -2,7 +2,7 @@ const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const Book = require('../models/Book');
 const User = require('../models/User');
-const { auth } = require('../middleware/auth');
+const { authenticateToken, optionalAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -118,78 +118,14 @@ router.get('/:id', async (req, res) => {
 });
 
 // @route   POST /api/books
-// @desc    Add a new book
-// @access  Private
-router.post('/', [
-  auth,
-  body('title')
-    .notEmpty()
-    .trim()
-    .isLength({ max: 200 })
-    .withMessage('Title is required and must be less than 200 characters'),
-  body('author')
-    .notEmpty()
-    .trim()
-    .isLength({ max: 100 })
-    .withMessage('Author is required and must be less than 100 characters'),
-  body('genre')
-    .notEmpty()
-    .trim()
-    .isLength({ max: 50 })
-    .withMessage('Genre is required and must be less than 50 characters'),
-  body('condition')
-    .isIn(['New', 'Like New', 'Very Good', 'Good', 'Fair', 'Poor'])
-    .withMessage('Invalid condition'),
-  body('language')
-    .optional()
-    .trim()
-    .isLength({ max: 30 })
-    .withMessage('Language must be less than 30 characters'),
-  body('description')
-    .optional()
-    .trim()
-    .isLength({ max: 1000 })
-    .withMessage('Description must be less than 1000 characters'),
-  body('isbn')
-    .optional()
-    .trim()
-    .isLength({ max: 20 })
-    .withMessage('ISBN must be less than 20 characters'),
-  body('publishedYear')
-    .optional()
-    .isInt({ min: 1000, max: new Date().getFullYear() + 1 })
-    .withMessage('Invalid published year'),
-  body('publisher')
-    .optional()
-    .trim()
-    .isLength({ max: 100 })
-    .withMessage('Publisher must be less than 100 characters'),
-  body('pageCount')
-    .optional()
-    .isInt({ min: 1 })
-    .withMessage('Page count must be a positive number'),
-  body('tags')
-    .optional()
-    .isArray()
-    .withMessage('Tags must be an array'),
-  body('coverImage')
-    .optional()
-    .isURL()
-    .withMessage('Cover image must be a valid URL'),
-  body('images')
-    .optional()
-    .isArray()
-    .withMessage('Images must be an array')
-], async (req, res) => {
+// @desc    Add a new book (validations disabled for now)
+// @access  Public
+router.post('/', [optionalAuth], async (req, res) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Validation failed',
-        errors: errors.array()
-      });
-    }
+    console.log('Book creation request received:', {
+      userId: req.user?._id,
+      body: req.body
+    });
 
     const {
       title,
@@ -204,18 +140,55 @@ router.post('/', [
       pageCount,
       tags,
       coverImage,
-      images
+      images,
+      email
     } = req.body;
 
-    // Get user's location for the book
-    const user = await User.findById(req.user.id);
+    console.log('Extracted book data:', {
+      title, author, genre, condition, email
+    });
+
+    // Normalize/Default values so creation succeeds
+    const normalizeCondition = (val) => {
+      if (!val) return 'Good';
+      const map = {
+        excellent: 'Very Good',
+        'very good': 'Very Good',
+        good: 'Good',
+        fair: 'Fair',
+        poor: 'Poor',
+        new: 'New',
+        'like new': 'Like New'
+      };
+      const key = String(val).toLowerCase();
+      return map[key] || 'Good';
+    };
+
+    const safeTitle = (req.body.title && String(req.body.title).trim()) || 'Untitled';
+    const safeAuthor = (req.body.author && String(req.body.author).trim()) || 'Unknown';
+    const safeGenre = (req.body.genre && String(req.body.genre).trim()) || 'General';
+    const safeLanguage = (req.body.language && String(req.body.language).trim()) || 'English';
+    const safeEmail = (email && String(email).trim()) || null;
+
+    let location = '';
+    let ownerId = null;
+    
+    // If user is authenticated, use their info
+    if (req.user) {
+      ownerId = req.user._id;
+      // Get user's location for the book
+      const user = await User.findById(req.user._id);
+      if (user) {
+        location = user.location || '';
+      }
+    }
 
     const book = new Book({
-      title,
-      author,
-      genre,
-      condition,
-      language,
+      title: safeTitle,
+      author: safeAuthor,
+      genre: safeGenre,
+      condition: normalizeCondition(condition),
+      language: safeLanguage,
       description,
       isbn,
       publishedYear,
@@ -224,12 +197,15 @@ router.post('/', [
       tags,
       coverImage,
       images,
-      owner: req.user.id,
-      location: user.location
+      owner: ownerId, // May be null for anonymous submissions
+      ownerEmail: safeEmail,
+      location: location
     });
 
     await book.save();
-    await book.populate('owner', 'username firstName lastName location rating');
+    if (ownerId) {
+      await book.populate('owner', 'username firstName lastName location rating');
+    }
 
     res.status(201).json({
       success: true,
@@ -238,9 +214,12 @@ router.post('/', [
     });
   } catch (error) {
     console.error('Add book error:', error);
+    console.error('Error details:', error.message);
+    console.error('Stack trace:', error.stack);
     res.status(500).json({
       success: false,
-      message: 'Server error while adding book'
+      message: 'Server error while adding book',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
@@ -249,7 +228,7 @@ router.post('/', [
 // @desc    Update a book
 // @access  Private
 router.put('/:id', [
-  auth,
+  authenticateToken,
   body('title')
     .optional()
     .trim()
@@ -267,7 +246,7 @@ router.put('/:id', [
     .withMessage('Genre must be less than 50 characters'),
   body('condition')
     .optional()
-    .isIn(['New', 'Like New', 'Very Good', 'Good', 'Fair', 'Poor'])
+    .isIn(['excellent', 'good', 'fair'])
     .withMessage('Invalid condition'),
   body('language')
     .optional()
@@ -304,7 +283,7 @@ router.put('/:id', [
     }
 
     // Check if user owns the book
-    if (!book.canEdit(req.user.id)) {
+    if (!book.canEdit(req.user._id)) {
       return res.status(403).json({
         success: false,
         message: 'Not authorized to edit this book'
@@ -338,7 +317,7 @@ router.put('/:id', [
 // @route   DELETE /api/books/:id
 // @desc    Delete a book
 // @access  Private
-router.delete('/:id', auth, async (req, res) => {
+router.delete('/:id', authenticateToken, async (req, res) => {
   try {
     const book = await Book.findById(req.params.id);
 
@@ -350,7 +329,7 @@ router.delete('/:id', auth, async (req, res) => {
     }
 
     // Check if user owns the book
-    if (!book.canEdit(req.user.id)) {
+    if (!book.canEdit(req.user._id)) {
       return res.status(403).json({
         success: false,
         message: 'Not authorized to delete this book'

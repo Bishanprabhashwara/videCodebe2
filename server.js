@@ -21,7 +21,10 @@ const app = express();
 // Security middleware
 app.use(helmet());
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: [
+    process.env.FRONTEND_URL || 'http://localhost:3000',
+    'http://localhost:8080'
+  ],
   credentials: true
 }));
 
@@ -58,7 +61,7 @@ require('./config/passport');
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
-app.use('/api/books', bookRoutes);
+app.use('/api/books', bookRoutes);  // <-- The correct endpoint
 app.use('/api/swaps', swapRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/admin', adminRoutes);
